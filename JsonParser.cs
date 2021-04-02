@@ -448,6 +448,7 @@ namespace AleProjects.Json
 				return true;
 
 			if (text.Length > 8 &&
+				text[0] == '/' &&
 				text.StartsWith("/Date(") && 
 				text.EndsWith(")/"))
 			{
@@ -668,6 +669,7 @@ namespace AleProjects.Json
 				{
 					if (parsingContext.TryPeek(out ParsingContext ctx) &&
 						ctx.LastProcessed != LastProcessedElement.KeyValueSep &&
+						ctx.LastProcessed != LastProcessedElement.ArrayStart &&
 						(ctx.LastProcessed != LastProcessedElement.ListSeparator || ctx.IsObject))
 						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
 
