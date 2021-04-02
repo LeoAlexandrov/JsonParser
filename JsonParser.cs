@@ -189,8 +189,8 @@ namespace AleProjects.Json
 			double doubleVal;
 
 #if NETCOREAPP2_1 || NETCOREAPP2_2 || NETCOREAPP3_0 || NETCOREAPP3_1 || NET5_0 || NETSTANDARD2_1
-			
-			ReadOnlySpan<char> number = text.AsSpan().Slice(start, count);
+
+			ReadOnlySpan<char> number = text.AsSpan(start, count);
 
 #else
 
@@ -234,11 +234,12 @@ namespace AleProjects.Json
 			}
 		}
 
-		protected static int SkipTextConstant(string text, int position, out string result)
+		protected static int SkipTextConstant(string text, int position, StringBuilder resultBuffer, out string result)
 		{
 			result = null;
-			StringBuilder resultBuffer = new StringBuilder(256);
-			
+			resultBuffer.Clear();
+
+
 			int Hi = text.Length - 1;
 			int i = position + 1;
 
@@ -308,7 +309,7 @@ namespace AleProjects.Json
 								i++;
 
 #if NETCOREAPP2_1 || NETCOREAPP2_2 || NETCOREAPP3_0 || NETCOREAPP3_1 || NET5_0 || NETSTANDARD2_1
-								resultBuffer.Append((char)ushort.Parse(text.AsSpan().Slice(i - 4, 4), NumberStyles.HexNumber));
+								resultBuffer.Append((char)ushort.Parse(text.AsSpan(i - 4, 4), NumberStyles.HexNumber));
 #else
 								resultBuffer.Append((char)ushort.Parse(text.Substring(i - 4, 4), NumberStyles.HexNumber));
 #endif
@@ -455,7 +456,7 @@ namespace AleProjects.Json
 
 #if NETCOREAPP2_1 || NETCOREAPP2_2 || NETCOREAPP3_0 || NETCOREAPP3_1 || NET5_0 || NETSTANDARD2_1
 
-				if (long.TryParse(text.AsSpan().Slice("/Date(".Length, text.Length - "/Date()/".Length), out long msec))
+				if (long.TryParse(text.AsSpan("/Date(".Length, text.Length - "/Date()/".Length), out long msec))
 				{
 					double ms = msec;
 
@@ -572,6 +573,7 @@ namespace AleProjects.Json
 
 
 			Stack<ParsingContext> parsingContext = new Stack<ParsingContext>();
+			StringBuilder resultBuffer = new StringBuilder(256);
 			object root = null;
 			int Hi = text.Length - 1;
 			int i = 0;
@@ -588,7 +590,7 @@ namespace AleProjects.Json
 				}
 				else if (c == '"')
 				{
-					int j = SkipTextConstant(text, i, out string val);
+					int j = SkipTextConstant(text, i, resultBuffer, out string val);
 
 					if (j < 0)
 						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
