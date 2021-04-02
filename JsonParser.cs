@@ -709,7 +709,8 @@ namespace AleProjects.Json
 				{
 					if (parsingContext.TryPeek(out ParsingContext ctx) &&
 						ctx.LastProcessed != LastProcessedElement.KeyValueSep &&
-						ctx.LastProcessed != LastProcessedElement.ListSeparator)
+						ctx.LastProcessed != LastProcessedElement.ArrayStart &&
+						(ctx.LastProcessed != LastProcessedElement.ListSeparator || ctx.IsObject ))
 						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
 
 					parsingContext.Push(ctx = new ParsingContext() { JsonArray = new List<object>(), LastProcessed = LastProcessedElement.ArrayStart });
