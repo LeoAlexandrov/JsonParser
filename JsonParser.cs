@@ -7,8 +7,12 @@
  */
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 
@@ -31,17 +35,6 @@ namespace AleProjects.Json
 
 	public class JsonDoc
 	{
-		protected const string ERROR_MESSAGE_UNEXPECTED_END = "Unexpected end";
-		protected const string ERROR_MESSAGE_KEY_NOT_UNIQUE = "Key not unique";
-		protected const string ERROR_MESSAGE_INVALID_KEY = "Invalid key";
-		protected const string ERROR_MESSAGE_UNEXPECTED_TOKEN = "Unexpected token";
-		protected const string ERROR_MESSAGE_UNKNOWN_ERROR = "Unknown error";
-
-		public const int ERROR_UNEXPECTED_END = 1;
-		public const int ERROR_KEY_NOT_UNIQUE = 2;
-		public const int ERROR_INVALID_KEY = 3;
-		public const int ERROR_UNEXPECTED_TOKEN = 4;
-
 
 		protected enum NumberType
 		{
@@ -76,53 +69,147 @@ namespace AleProjects.Json
 		{
 			public bool StrictPropertyNames { get; set; }
 			public bool AllowComments { get; set; }
-			public bool UseNetDecimalType { get; set; }
 			public bool RecognizeDateTime { get; set; }
+			public bool ForceDoubleInArrays { get; set; }
+
+			public Func<IEnumerable<string>, object> ObjectFactory { get; set; }
 		}
 
+
+		public class ParseError
+		{
+			public const int ARGUMENT_NULL = 1;
+			public const int UNEXPECTED_END = 2;
+			public const int KEY_NOT_UNIQUE = 3;
+			public const int INVALID_KEY = 4;
+			public const int UNEXPECTED_TOKEN = 5;
+
+			public const string MESSAGE_ARGUMENT_NULL = "Argument is null";
+			public const string MESSAGE_UNEXPECTED_END = "Unexpected end";
+			public const string MESSAGE_KEY_NOT_UNIQUE = "Key not unique";
+			public const string MESSAGE_INVALID_KEY = "Invalid key";
+			public const string MESSAGE_UNEXPECTED_TOKEN = "Unexpected token";
+			public const string MESSAGE_UNKNOWN_ERROR = "Unknown error";
+
+			public int Code { get; private set; }
+			public int Position { get; private set; }
+			public int Line { get; private set; }
+			public string Message { get; private set; }
+
+			public ParseError(int code, string text, int index)
+			{
+				if (text == null)
+				{
+					Code = code;
+					Position = 0;
+					Line = 0;
+					Message = MESSAGE_ARGUMENT_NULL;
+
+					return;
+				}
+
+				if (index >= text.Length)
+					index = text.Length - 1;
+
+				int line = 0;
+				int position = 0;
+
+				while (index >= 0)
+				{
+					if (text[index] == '\n')
+						line++;
+
+					if (line == 0)
+						position++;
+
+					index--;
+				}
+
+				string message;
+
+				switch (code)
+				{
+					case ARGUMENT_NULL:
+						message = MESSAGE_ARGUMENT_NULL;
+						break;
+
+					case UNEXPECTED_END:
+						message = MESSAGE_UNEXPECTED_END;
+						break;
+
+					case KEY_NOT_UNIQUE:
+						message = MESSAGE_KEY_NOT_UNIQUE;
+						break;
+
+					case INVALID_KEY:
+						message = MESSAGE_INVALID_KEY;
+						break;
+
+					case UNEXPECTED_TOKEN:
+						message = MESSAGE_UNEXPECTED_TOKEN;
+						break;
+
+					default:
+						message = MESSAGE_UNKNOWN_ERROR;
+						break;
+				}
+
+				Code = code;
+				Position = position;
+				Line = line;
+				Message = message;
+			}
+
+			public void ThrowException()
+			{
+				throw new JsonParseException(Code, Line, Position, Message);
+			}
+		}
 
 
 		public class JsonObject : Dictionary<string, object>
 		{
-			public object GetValue(string path, object defaultValue)
+			public T GetValue<T>(params string[] pathNodes)
 			{
-				string[] keys = path.Split(':', StringSplitOptions.RemoveEmptyEntries);
 				object obj = this;
 
-				for (int i = 0; i < keys.Length; i++)
+				for (int i = 0; i < pathNodes.Length; i++)
 					if (obj is IReadOnlyList<object> jsonArr)
 					{
-						if (!int.TryParse(keys[i], out int index) || index >= jsonArr.Count || index < 0)
-							return defaultValue;
+						if (!int.TryParse(pathNodes[i], out int index) || index >= jsonArr.Count || index < 0)
+							throw new IndexOutOfRangeException();
 
 						obj = jsonArr[index];
 					}
-					else if (!(obj is JsonObject jsonObj && jsonObj.TryGetValue(keys[i], out obj)))
+					else if (!(obj is JsonObject jsonObj && jsonObj.TryGetValue(pathNodes[i], out obj)))
 					{
-						obj = defaultValue;
-						break;
+						throw new KeyNotFoundException();
 					}
 
-				return obj;
+
+				if (!(obj is T result)) 
+					result = (T)Convert.ChangeType(obj, typeof(T));
+
+				return result;
 			}
 
-			public T GetValue<T>(string path, T defaultValue)
+			public T GetValueOrDefault<T>(params string[] pathNodes)
 			{
-				string[] keys = path.Split(':', StringSplitOptions.RemoveEmptyEntries);
 				object obj = this;
 
-				for (int i = 0; i < keys.Length; i++)
-					if (obj is IReadOnlyList<object> jsonArr)
-					{
-						if (!int.TryParse(keys[i], out int index) || index >= jsonArr.Count || index < 0)
-							return defaultValue;
+				for (int i = 0; i < pathNodes.Length; i++)
+					if (!string.IsNullOrEmpty(pathNodes[i]))
+						if (obj is IReadOnlyList<object> jsonArr)
+						{
+							if (!int.TryParse(pathNodes[i], out int index) || index >= jsonArr.Count || index < 0)
+								return default;
 
-						obj = jsonArr[index];
-					}
-					else if (!(obj is JsonObject jsonObj && jsonObj.TryGetValue(keys[i], out obj)))
-					{
-						return defaultValue;
-					}
+							obj = jsonArr[index];
+						}
+						else if (!(obj is JsonObject jsonObj && jsonObj.TryGetValue(pathNodes[i], out obj)))
+						{
+							return default;
+						}
 
 
 				if (!(obj is T result))
@@ -132,35 +219,256 @@ namespace AleProjects.Json
 					}
 					catch
 					{
-						result = defaultValue;
+						result = default;
 					}
 
 				return result;
 			}
 
-		}
+			public T Map<T>(T instance = default) where T : new()
+			{
+				if (EqualityComparer<T>.Default.Equals(instance, default))
+					instance = new();
 
+				foreach (var prop in instance.GetType().GetProperties())
+					if (prop.CanWrite && this.TryGetValue(prop.Name, out object val))
+						try
+						{
+							prop.SetValue(instance, val);
+						}
+						catch
+						{
+							try
+							{
+								prop.SetValue(instance, Convert.ChangeType(val, prop.PropertyType));
+							}
+							catch
+							{
+								continue;
+							}
+						}
+
+				return instance;
+			}
+
+		}
 
 
 		protected class ParsingContext
 		{
-			public List<object> JsonArray { get; set; }
-			public JsonObject JsonObj { get; set; }
+			protected List<object> JsonArray { get; set; }
+			protected object TypedArray { get; set; }
+			protected IDictionary<string, object> JsonObject { get; set; }
+			protected object TypedObject { get; set; }
 			public string PendingObjectKey { get; set; }
 			public LastProcessedElement LastProcessed { get; set; }
-			public bool IsObject { get => JsonObj != null; }
-			public bool IsArray { get => JsonArray != null; }
+			public bool IsObject { get => JsonObject != null || TypedObject != null; }
+			public bool IsArray { get => JsonObject == null && TypedObject == null; }
+			public bool IsTypedObject { get => TypedObject != null; }
+
+			public string PathNode
+			{
+				get
+				{
+					if (JsonArray != null) 
+						return JsonArray.Count.ToString();
+
+					if (TypedArray != null && TypedArray is IList list) 
+						return list.Count.ToString();
+
+					return PendingObjectKey;
+				}
+			}
+
+			public ParsingContext(object jsonObject)
+			{
+				if (jsonObject != null)
+					if (jsonObject is IDictionary<string, object> dict) JsonObject = dict;
+					else TypedObject = jsonObject;
+			}
+
+
+			[MethodImpl(MethodImplOptions.AggressiveInlining)]
+			public object GetObject()
+			{
+				return JsonObject ?? TypedObject;
+			}
+
+			[MethodImpl(MethodImplOptions.AggressiveInlining)]
+			public object GetArray()
+			{
+				return JsonArray ?? TypedArray;
+			}
+
+			public void SetObjectProperty(string name, object value)
+			{
+				if (JsonObject != null)
+				{
+					JsonObject.Add(name, value);
+				}
+				else if (TypedObject != null)
+				{
+					var property = TypedObject
+						.GetType()
+						.GetProperties()
+						.FirstOrDefault(p => p.CanWrite && string.Compare(p.Name, name, StringComparison.InvariantCultureIgnoreCase) == 0);
+
+					if (property != null)
+						try
+						{
+							property.SetValue(TypedObject, value);
+						}
+						catch
+						{
+							try
+							{
+								property.SetValue(TypedObject, Convert.ChangeType(value, property.PropertyType));
+							}
+							catch
+							{
+							}
+						}
+				}
+			}
+
+			public void AddObjectToArray(object item)
+			{
+				if (TypedArray != null) ConvertToJsonArrayAndAdd(item);
+				else if (JsonArray == null) JsonArray = new List<object>() { item };
+				else JsonArray.Add(item);
+			}
+
+			public void AddStringToArray(string item)
+			{
+				if (JsonArray != null) JsonArray.Add(item);
+				else if (TypedArray == null) TypedArray = new List<string>() { item };
+				else if (TypedArray is List<string> stringList) stringList.Add(item);
+				else ConvertToJsonArrayAndAdd(item);
+			}
+
+			public void AddNumberToArray(object item)
+			{
+				if (JsonArray != null) JsonArray.Add(item);
+				else if (TypedArray == null)
+				{
+					switch (item)
+					{
+						case double doubleVal:
+							TypedArray = new List<double>() { doubleVal };
+							break;
+
+						case int intVal:
+							TypedArray = new List<int>() { intVal };
+							break;
+
+						case long longVal:
+							TypedArray = new List<long>() { longVal };
+							break;
+
+						default:
+							ConvertToJsonArrayAndAdd(item);
+							break;
+					}
+				}
+				else if (TypedArray is List<double> doubleList) doubleList.Add(Convert.ToDouble(item));
+				else if (item.GetType() == typeof(double))
+				{
+					IList list = TypedArray as IList;
+					doubleList = new List<double>(list.Count * 3 / 2);
+					for (int i = 0; i < list.Count; i++) doubleList.Add(Convert.ToDouble(list[i]));
+					doubleList.Add((double)item);
+					TypedArray = doubleList;
+				}
+				else if (TypedArray is List<long> longList) longList.Add(Convert.ToInt64(item));
+				else if (item.GetType() == typeof(long))
+				{
+					IList list = TypedArray as IList;
+					longList = new List<long>(list.Count * 3 / 2);
+					for (int i = 0; i < list.Count; i++) longList.Add(Convert.ToInt64(list[i]));
+					longList.Add((long)item);
+					TypedArray = longList;
+				}
+				else if (TypedArray is List<int> intList && item.GetType() == typeof(int)) intList.Add((int)item);
+				else ConvertToJsonArrayAndAdd(item);
+
+			}
+
+			public void AddDateTimeToArray(DateTime item)
+			{
+				if (JsonArray != null) JsonArray.Add(item);
+				else if (TypedArray == null) TypedArray = new List<DateTime>() { item };
+				else if (TypedArray is List<DateTime> datetimeList) datetimeList.Add(item);
+				else ConvertToJsonArrayAndAdd(item);
+			}
+
+			public void AddBoolToArray(bool item)
+			{
+				if (JsonArray != null) JsonArray.Add(item);
+				else if (TypedArray == null) TypedArray = new List<bool>() { item };
+				else if (TypedArray is List<bool> boolList) boolList.Add(item);
+				else ConvertToJsonArrayAndAdd(item);
+			}
+
+			private void ConvertToJsonArrayAndAdd(object item)
+			{
+				int n;
+
+				switch (TypedArray)
+				{
+					case List<string> stringList:
+						n = stringList.Count;
+						JsonArray = new List<object>(n * 3 / 2);
+						for (int i = 0; i < n; i++)	JsonArray.Add(stringList[i]);
+						break;
+
+					case List<int> intList:
+						n = intList.Count;
+						JsonArray = new List<object>(n * 3 / 2);
+						for (int i = 0; i < n; i++) JsonArray.Add(intList[i]);
+						break;
+
+					case List<double> doubleList:
+						n = doubleList.Count;
+						JsonArray = new List<object>(n * 3 / 2);
+						for (int i = 0; i < n; i++) JsonArray.Add(doubleList[i]);
+						break;
+
+					case List<long> longList:
+						n = longList.Count;
+						JsonArray = new List<object>(n * 3 / 2);
+						for (int i = 0; i < n; i++) JsonArray.Add(longList[i]);
+						break;
+
+					case List<DateTime> datetimeList:
+						n = datetimeList.Count;
+						JsonArray = new List<object>(n * 3 / 2);
+						for (int i = 0; i < n; i++) JsonArray.Add(datetimeList[i]);
+						break;
+
+					default:
+						JsonArray = new List<object>();
+						break;
+				}
+
+				TypedArray = null;
+				JsonArray.Add(item);
+			}
 		}
 
 
-		public object Root { get; set; }
+		public object Root { get; protected set; }
+
+		protected StringBuilder reusableBuilder;
+		protected Stack<ParsingContext> reusableContext;
 
 
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		protected static bool IsJsonWhitespace(char c)
 		{
 			return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 		}
 
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		protected static bool IsHexDigit(char c)
 		{
 			return (c >= '0' && c <= '9') || ((c = char.ToUpper(c)) >= 'A' && c <= 'F');
@@ -184,7 +492,7 @@ namespace AleProjects.Json
 			return true;
 		}
 
-		protected static object ObjectForNumber(string text, int start, int count, NumberType numberType, bool allowDecimalType)
+		protected static object ObjectForNumber(string text, int start, int count, NumberType numberType)
 		{
 			double doubleVal;
 
@@ -212,19 +520,9 @@ namespace AleProjects.Json
 
 					return null;
 
+				case NumberType.Decimal:
 				case NumberType.Double:
 					if (double.TryParse(number, NumberStyles.Float, new NumberFormatInfo(), out doubleVal))
-						return doubleVal;
-
-					return null;
-
-				case NumberType.Decimal:
-					NumberFormatInfo fmt = null;
-
-					if (allowDecimalType && decimal.TryParse(number, NumberStyles.AllowDecimalPoint | NumberStyles.AllowLeadingSign, fmt = new NumberFormatInfo(), out decimal decVal))
-						return decVal;
-
-					if (double.TryParse(number, NumberStyles.Float, fmt ?? new NumberFormatInfo(), out doubleVal))
 						return doubleVal;
 
 					return null;
@@ -500,80 +798,59 @@ namespace AleProjects.Json
 			return false;
 		}
 
-		protected static JsonParseException CreateException(int code, string text, int index)
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
+		protected static object WithError(int code, string text, int index, out ParseError error)
 		{
-			if (index >= text.Length) 
-				index = text.Length - 1;
+			error = new ParseError(code, text, index);
+			return null;
+		}
 
-			int line = 0;
-			int position = 0;
+		protected JsonDoc(object root) 
+		{
+			Root = root;
+		}
 
-			while (index >= 0)
-			{
-				if (text[index] == '\n') 
-					line++;
-
-				if (line == 0)
-					position++;
-
-				index--;
-			}
-
-			string message;
-
-			switch (code)
-			{
-				case ERROR_UNEXPECTED_END:
-					message = ERROR_MESSAGE_UNEXPECTED_END;
-					break;
-
-				case ERROR_KEY_NOT_UNIQUE:
-					message = ERROR_MESSAGE_KEY_NOT_UNIQUE;
-					break;
-
-				case ERROR_INVALID_KEY:
-					message = ERROR_MESSAGE_INVALID_KEY;
-					break;
-
-				case ERROR_UNEXPECTED_TOKEN:
-					message = ERROR_MESSAGE_UNEXPECTED_TOKEN;
-					break;
-
-				default:
-					message = ERROR_MESSAGE_UNKNOWN_ERROR;
-					break;
-			}
-
-			return new JsonParseException(code, line, position, message);
+		public JsonDoc()
+		{
+			reusableBuilder = new StringBuilder(256);
+			reusableContext = new Stack<ParsingContext>();
 		}
 
 
-		protected JsonDoc() { }
+		public object Parse(string text, ParsingSettings settings, out ParseError error)
+		{
+			if (reusableBuilder == null)
+				reusableBuilder = new StringBuilder(256);
 
-		public static JsonDoc Parse(string text, ParsingSettings settings = null)
+			if (reusableContext == null)
+				reusableContext = new Stack<ParsingContext>();
+
+			return Parse(text, settings, reusableContext, reusableBuilder, out error);
+		}
+
+		protected static object Parse(string text, ParsingSettings settings, Stack<ParsingContext> parsingContext, StringBuilder resultBuffer, out ParseError error)
 		{
 			if (text == null)
-				throw new ArgumentNullException(nameof(text));
-
-			if (string.IsNullOrWhiteSpace(text))
-				throw new ArgumentException(ERROR_MESSAGE_UNEXPECTED_END, nameof(text));
+				return WithError(ParseError.ARGUMENT_NULL, null, 0, out error);
 
 			bool strictPropertyNames = true;
-			bool allowComments = false;
-			bool useDecimalType = false;
+			bool allowComments = true;
 			bool recognizeDateTime = false;
+			bool forceDoubleInArrays = false;
+			Func<IEnumerable<string>, object> objectFactory = null;
 
 			if (settings != null)
 			{
 				strictPropertyNames = settings.StrictPropertyNames;
 				allowComments = settings.AllowComments;
-				useDecimalType = settings.UseNetDecimalType;
 				recognizeDateTime = settings.RecognizeDateTime;
+				forceDoubleInArrays = settings.ForceDoubleInArrays;
+				objectFactory = settings.ObjectFactory;
 			}
 
+			parsingContext.Clear();
+			resultBuffer.Clear();
 
-			Stack<ParsingContext> parsingContext = new Stack<ParsingContext>();
-			StringBuilder resultBuffer = new StringBuilder(256);
 			object root = null;
 			int Hi = text.Length - 1;
 			int i = 0;
@@ -593,7 +870,7 @@ namespace AleProjects.Json
 					int j = SkipTextConstant(text, i, resultBuffer, out string val);
 
 					if (j < 0)
-						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
 					if (root == null)
 					{
@@ -602,46 +879,49 @@ namespace AleProjects.Json
 					}
 					else if (!parsingContext.TryPeek(out ParsingContext ctx))
 					{
-						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 					}
 					else if (ctx.IsArray)
 					{
-						if (ctx.LastProcessed == LastProcessedElement.ArrayStart || 
+						if (ctx.LastProcessed == LastProcessedElement.ArrayStart ||
 							ctx.LastProcessed == LastProcessedElement.ListSeparator)
 						{
-							if (recognizeDateTime && TryGetDateTime(val, out DateTime dt)) ctx.JsonArray.Add(dt);
-							else ctx.JsonArray.Add(val);
+							if (recognizeDateTime && TryGetDateTime(val, out DateTime dt)) ctx.AddDateTimeToArray(dt);
+							else ctx.AddStringToArray(val);
 
 							ctx.LastProcessed = LastProcessedElement.TextConstant;
 						}
 						else
 						{
-							throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+							return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 						}
 					}
 					else
 					{
-						if (ctx.LastProcessed == LastProcessedElement.ObjectKey || 
+						if (ctx.LastProcessed == LastProcessedElement.ObjectKey ||
 							(ctx.LastProcessed & LastProcessedElement.Value) != 0)
-							throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+							return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
 
-						if (ctx.LastProcessed == LastProcessedElement.ObjectStart || 
+						if (ctx.LastProcessed == LastProcessedElement.ObjectStart ||
 							ctx.LastProcessed == LastProcessedElement.ListSeparator)
 						{
 							if (!IsValidObjectKey(val, strictPropertyNames))
-								throw CreateException(ERROR_INVALID_KEY, text, i);
+								return WithError(ParseError.INVALID_KEY, text, i, out error);
 
-							if (ctx.JsonObj.ContainsKey(val))
-								throw CreateException(ERROR_KEY_NOT_UNIQUE, text, i);
+							if (ctx.GetObject() is IDictionary<string, object> dict &&
+								dict.ContainsKey(val))
+								return WithError(ParseError.KEY_NOT_UNIQUE, text, i, out error);
 
 							ctx.PendingObjectKey = val;
 							ctx.LastProcessed = LastProcessedElement.ObjectKey;
 						}
 						else
 						{
-							if (recognizeDateTime && TryGetDateTime(val, out DateTime dt)) ctx.JsonObj[ctx.PendingObjectKey] = dt;
-							else ctx.JsonObj[ctx.PendingObjectKey] = val;
+							if (recognizeDateTime && TryGetDateTime(val, out DateTime dt))
+								ctx.SetObjectProperty(ctx.PendingObjectKey, dt);
+							else
+								ctx.SetObjectProperty(ctx.PendingObjectKey, val);
 
 							ctx.LastProcessed = LastProcessedElement.TextConstant;
 						}
@@ -651,18 +931,18 @@ namespace AleProjects.Json
 				}
 				else if (c == ',')
 				{
-					if (!parsingContext.TryPeek(out ParsingContext ctx) || 
+					if (!parsingContext.TryPeek(out ParsingContext ctx) ||
 						(ctx.LastProcessed & LastProcessedElement.Value) == 0)
-						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
 					ctx.LastProcessed = LastProcessedElement.ListSeparator;
 					i++;
 				}
 				else if (c == ':')
 				{
-					if (!parsingContext.TryPeek(out ParsingContext ctx) || 
+					if (!parsingContext.TryPeek(out ParsingContext ctx) ||
 						ctx.LastProcessed != LastProcessedElement.ObjectKey)
-						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
 					ctx.LastProcessed = LastProcessedElement.KeyValueSep;
 					i++;
@@ -673,12 +953,12 @@ namespace AleProjects.Json
 						ctx.LastProcessed != LastProcessedElement.KeyValueSep &&
 						ctx.LastProcessed != LastProcessedElement.ArrayStart &&
 						(ctx.LastProcessed != LastProcessedElement.ListSeparator || ctx.IsObject))
-						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
-					parsingContext.Push(ctx = new ParsingContext() { JsonObj = new JsonObject(), LastProcessed = LastProcessedElement.ObjectStart });
+					parsingContext.Push(ctx = new ParsingContext(objectFactory?.Invoke(parsingContext.Select(c => c.PathNode)) ?? new JsonObject()) { LastProcessed = LastProcessedElement.ObjectStart });
 
 					if (root == null)
-						root = ctx.JsonObj;
+						root = ctx.GetObject();
 
 					i++;
 				}
@@ -687,18 +967,18 @@ namespace AleProjects.Json
 					if (!parsingContext.TryPeek(out ParsingContext ctx) ||
 						!ctx.IsObject ||
 						(ctx.LastProcessed != LastProcessedElement.ObjectStart && (ctx.LastProcessed & LastProcessedElement.Value) == 0))
-						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
-					JsonObject obj = ctx.JsonObj;
+					object obj = ctx.GetObject();
 
 					parsingContext.Pop();
 
 					if (parsingContext.TryPeek(out ctx))
 					{
 						if (ctx.IsArray)
-							ctx.JsonArray.Add(obj);
+							ctx.AddObjectToArray(obj);
 						else
-							ctx.JsonObj[ctx.PendingObjectKey] = obj;
+							ctx.SetObjectProperty(ctx.PendingObjectKey, obj);
 
 						ctx.LastProcessed = LastProcessedElement.ObjectEnd;
 					}
@@ -710,13 +990,31 @@ namespace AleProjects.Json
 					if (parsingContext.TryPeek(out ParsingContext ctx) &&
 						ctx.LastProcessed != LastProcessedElement.KeyValueSep &&
 						ctx.LastProcessed != LastProcessedElement.ArrayStart &&
-						(ctx.LastProcessed != LastProcessedElement.ListSeparator || ctx.IsObject ))
-						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						(ctx.LastProcessed != LastProcessedElement.ListSeparator || ctx.IsObject))
+						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
-					parsingContext.Push(ctx = new ParsingContext() { JsonArray = new List<object>(), LastProcessed = LastProcessedElement.ArrayStart });
+					/*
+					Type forceArrayItemsType = null;
 
-					if (root == null)
-						root = ctx.JsonArray;
+					if (ctx != null &&
+						ctx.IsTypedObject)
+					{
+						var property = ctx.GetObject()
+							.GetType()
+							.GetProperty(ctx.PendingObjectKey, BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
+
+						Type listInterface, genericType;
+
+						if (property != null &&
+							(listInterface = property.PropertyType.GetInterface("IReadOnlyList`1")) != null &&
+							((genericType = listInterface.GenericTypeArguments.FirstOrDefault()) == typeof(double) || genericType == typeof(long) || genericType == typeof(int)))
+						{
+							forceArrayItemsType = genericType;
+						}
+					}
+					*/
+
+					parsingContext.Push(ctx = new ParsingContext(null) { LastProcessed = LastProcessedElement.ArrayStart });
 
 					i++;
 				}
@@ -725,20 +1023,24 @@ namespace AleProjects.Json
 					if (!parsingContext.TryPeek(out ParsingContext ctx) ||
 						!ctx.IsArray ||
 						(ctx.LastProcessed != LastProcessedElement.ArrayStart && (ctx.LastProcessed & LastProcessedElement.Value) == 0))
-						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
-					IReadOnlyList<object> array = ctx.JsonArray;
+					object array = ctx.GetArray();
 
 					parsingContext.Pop();
 
 					if (parsingContext.TryPeek(out ctx))
 					{
 						if (ctx.IsArray)
-							ctx.JsonArray.Add(array);
+							ctx.AddObjectToArray(array);
 						else
-							ctx.JsonObj[ctx.PendingObjectKey] = array;
+							ctx.SetObjectProperty(ctx.PendingObjectKey, array);
 
 						ctx.LastProcessed = LastProcessedElement.ArrayEnd;
+					}
+					else
+					{
+						root = array;
 					}
 
 					i++;
@@ -748,35 +1050,44 @@ namespace AleProjects.Json
 					int j = SkipNumber(text, i, out NumberType numberType);
 
 					if (j < 0)
-						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
+
 
 					if (root == null)
 					{
-						root = ObjectForNumber(text, i, j - i, numberType, useDecimalType);
+						root = ObjectForNumber(text, i, j - i, numberType);
+
+						if (root == null)
+							return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 					}
 					else if (!parsingContext.TryPeek(out ParsingContext ctx))
 					{
-						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 					}
 					else if (ctx.IsArray)
 					{
-						if (ctx.LastProcessed == LastProcessedElement.ArrayStart ||
-							ctx.LastProcessed == LastProcessedElement.ListSeparator)
+						object number;
+
+						if ((ctx.LastProcessed == LastProcessedElement.ArrayStart || ctx.LastProcessed == LastProcessedElement.ListSeparator) &&
+							(number = ObjectForNumber(text, i, j - i, forceDoubleInArrays ? NumberType.Double : numberType)) != null)
 						{
-							ctx.JsonArray.Add(ObjectForNumber(text, i, j - i, numberType, useDecimalType));
+							ctx.AddNumberToArray(number);
 							ctx.LastProcessed = LastProcessedElement.Number;
 						}
 						else
 						{
-							throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+							return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 						}
 					}
 					else
 					{
-						if (ctx.LastProcessed != LastProcessedElement.KeyValueSep)
-							throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						object number;
 
-						ctx.JsonObj[ctx.PendingObjectKey] = ObjectForNumber(text, i, j - i, numberType, useDecimalType);
+						if (ctx.LastProcessed != LastProcessedElement.KeyValueSep ||
+							(number = ObjectForNumber(text, i, j - i, numberType)) == null)
+							return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
+
+						ctx.SetObjectProperty(ctx.PendingObjectKey, number);
 						ctx.LastProcessed = LastProcessedElement.Number;
 					}
 
@@ -785,7 +1096,7 @@ namespace AleProjects.Json
 				else if (c == 'n')
 				{
 					if (string.Compare(text, i, "null", 0, 4, StringComparison.InvariantCulture) != 0)
-						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
 					if (root == null)
 					{
@@ -793,27 +1104,27 @@ namespace AleProjects.Json
 					}
 					else if (!parsingContext.TryPeek(out ParsingContext ctx))
 					{
-						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 					}
 					else if (ctx.IsArray)
 					{
 						if (ctx.LastProcessed == LastProcessedElement.ArrayStart ||
 							ctx.LastProcessed == LastProcessedElement.ListSeparator)
 						{
-							ctx.JsonArray.Add(null);
+							ctx.AddObjectToArray(null);
 							ctx.LastProcessed = LastProcessedElement.Null;
 						}
 						else
 						{
-							throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+							return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 						}
 					}
 					else
 					{
 						if (ctx.LastProcessed != LastProcessedElement.KeyValueSep)
-							throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+							return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
-						ctx.JsonObj[ctx.PendingObjectKey] = null;
+						ctx.SetObjectProperty(ctx.PendingObjectKey, null);
 						ctx.LastProcessed = LastProcessedElement.Null;
 					}
 
@@ -835,7 +1146,7 @@ namespace AleProjects.Json
 					}
 					else
 					{
-						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 					}
 
 					if (root == null)
@@ -844,34 +1155,34 @@ namespace AleProjects.Json
 					}
 					else if (!parsingContext.TryPeek(out ParsingContext ctx))
 					{
-						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 					}
 					else if (ctx.IsArray)
 					{
 						if (ctx.LastProcessed == LastProcessedElement.ArrayStart ||
 							ctx.LastProcessed == LastProcessedElement.ListSeparator)
 						{
-							ctx.JsonArray.Add(val);
+							ctx.AddBoolToArray(val);
 							ctx.LastProcessed = LastProcessedElement.BoolConstant;
 						}
 						else
 						{
-							throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+							return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 						}
 					}
 					else
 					{
 						if (ctx.LastProcessed != LastProcessedElement.KeyValueSep)
-							throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+							return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
-						ctx.JsonObj[ctx.PendingObjectKey] = val;
+						ctx.SetObjectProperty(ctx.PendingObjectKey, val);
 						ctx.LastProcessed = LastProcessedElement.BoolConstant;
 					}
 				}
 				else if (c == '/')
 				{
 					if (!allowComments || i == Hi || ((c = text[++i]) != '/' && c != '*'))
-						throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
 					if (c == '/')
 					{
@@ -885,24 +1196,41 @@ namespace AleProjects.Json
 						do
 						{
 							i++;
-						} while (i < Hi && text[i] != '*' && text[i + 1] != '/');
+						} while (i < Hi && (text[i] != '*' || text[i + 1] != '/'));
 
-						if (i >= Hi)
-							throw CreateException(ERROR_UNEXPECTED_END, text, i);
+						if (i < Hi)
+							i += 2;
+						else
+							i++;
 					}
 				}
 				else
 				{
-					throw CreateException(ERROR_UNEXPECTED_TOKEN, text, i);
+					return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 				}
 			}
 
 
 			if (parsingContext.Count != 0)
-				throw CreateException(ERROR_UNEXPECTED_END, text, i);
+				return WithError(ParseError.UNEXPECTED_END, text, i, out error);
 
-			return new JsonDoc() { Root = root };
+			error = null;
+
+			return root;
 		}
-	}
+		
+		public static JsonDoc Parse(string text, ParsingSettings settings = null)
+		{
+			if (text == null)
+				throw new ArgumentNullException(nameof(text));
 
+			object root = Parse(text, settings, new Stack<ParsingContext>(), new StringBuilder(256), out ParseError error);
+
+			if (error != null)
+				error.ThrowException();
+
+			return new JsonDoc(root);
+		}
+
+	}
 }
