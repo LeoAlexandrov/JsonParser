@@ -228,7 +228,7 @@ namespace AleProjects.Json
 			public T Map<T>(T instance = default) where T : new()
 			{
 				if (EqualityComparer<T>.Default.Equals(instance, default))
-					instance = new();
+					instance = new T();
 
 				foreach (var prop in instance.GetType().GetProperties())
 					if (prop.CanWrite && this.TryGetValue(prop.Name, out object val))
