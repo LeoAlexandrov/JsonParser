@@ -799,6 +799,23 @@ namespace AleProjects.Json
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
+		protected static bool TryPeek(Stack<ParsingContext> parsingContext, out ParsingContext context)
+		{
+#if NETCOREAPP2_1 || NETCOREAPP2_2 || NETCOREAPP3_0 || NETCOREAPP3_1 || NET5_0 || NETSTANDARD2_1
+			return parsingContext.TryPeek(out context);
+#else
+			if (parsingContext.Any())
+			{
+				context = parsingContext.Peek();
+				return true;
+			}
+
+			context = null;
+			return false;
+#endif
+		}
+
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		protected static object WithError(int code, string text, int index, out ParseError error)
 		{
 			error = new ParseError(code, text, index);
@@ -877,7 +894,7 @@ namespace AleProjects.Json
 						if (recognizeDateTime && TryGetDateTime(val, out DateTime dt)) root = dt;
 						else root = val;
 					}
-					else if (!parsingContext.TryPeek(out ParsingContext ctx))
+					else if (!TryPeek(parsingContext, out ParsingContext ctx))
 					{
 						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 					}
@@ -931,7 +948,7 @@ namespace AleProjects.Json
 				}
 				else if (c == ',')
 				{
-					if (!parsingContext.TryPeek(out ParsingContext ctx) ||
+					if (!TryPeek(parsingContext, out ParsingContext ctx) ||
 						(ctx.LastProcessed & LastProcessedElement.Value) == 0)
 						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
@@ -940,7 +957,7 @@ namespace AleProjects.Json
 				}
 				else if (c == ':')
 				{
-					if (!parsingContext.TryPeek(out ParsingContext ctx) ||
+					if (!TryPeek(parsingContext, out ParsingContext ctx) ||
 						ctx.LastProcessed != LastProcessedElement.ObjectKey)
 						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
@@ -949,13 +966,13 @@ namespace AleProjects.Json
 				}
 				else if (c == '{')
 				{
-					if (parsingContext.TryPeek(out ParsingContext ctx) &&
+					if (TryPeek(parsingContext, out ParsingContext ctx) &&
 						ctx.LastProcessed != LastProcessedElement.KeyValueSep &&
 						ctx.LastProcessed != LastProcessedElement.ArrayStart &&
 						(ctx.LastProcessed != LastProcessedElement.ListSeparator || ctx.IsObject))
 						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
-					parsingContext.Push(ctx = new ParsingContext(objectFactory?.Invoke(parsingContext.Select(c => c.PathNode)) ?? new JsonObject()) { LastProcessed = LastProcessedElement.ObjectStart });
+					parsingContext.Push(ctx = new ParsingContext(objectFactory?.Invoke(parsingContext.Select(ct => ct.PathNode)) ?? new JsonObject()) { LastProcessed = LastProcessedElement.ObjectStart });
 
 					if (root == null)
 						root = ctx.GetObject();
@@ -964,7 +981,7 @@ namespace AleProjects.Json
 				}
 				else if (c == '}')
 				{
-					if (!parsingContext.TryPeek(out ParsingContext ctx) ||
+					if (!TryPeek(parsingContext, out ParsingContext ctx) ||
 						!ctx.IsObject ||
 						(ctx.LastProcessed != LastProcessedElement.ObjectStart && (ctx.LastProcessed & LastProcessedElement.Value) == 0))
 						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
@@ -973,7 +990,7 @@ namespace AleProjects.Json
 
 					parsingContext.Pop();
 
-					if (parsingContext.TryPeek(out ctx))
+					if (TryPeek(parsingContext, out ctx))
 					{
 						if (ctx.IsArray)
 							ctx.AddObjectToArray(obj);
@@ -987,7 +1004,7 @@ namespace AleProjects.Json
 				}
 				else if (c == '[')
 				{
-					if (parsingContext.TryPeek(out ParsingContext ctx) &&
+					if (TryPeek(parsingContext, out ParsingContext ctx) &&
 						ctx.LastProcessed != LastProcessedElement.KeyValueSep &&
 						ctx.LastProcessed != LastProcessedElement.ArrayStart &&
 						(ctx.LastProcessed != LastProcessedElement.ListSeparator || ctx.IsObject))
@@ -1020,7 +1037,7 @@ namespace AleProjects.Json
 				}
 				else if (c == ']')
 				{
-					if (!parsingContext.TryPeek(out ParsingContext ctx) ||
+					if (!TryPeek(parsingContext, out ParsingContext ctx) ||
 						!ctx.IsArray ||
 						(ctx.LastProcessed != LastProcessedElement.ArrayStart && (ctx.LastProcessed & LastProcessedElement.Value) == 0))
 						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
@@ -1029,7 +1046,7 @@ namespace AleProjects.Json
 
 					parsingContext.Pop();
 
-					if (parsingContext.TryPeek(out ctx))
+					if (TryPeek(parsingContext, out ctx))
 					{
 						if (ctx.IsArray)
 							ctx.AddObjectToArray(array);
@@ -1060,7 +1077,7 @@ namespace AleProjects.Json
 						if (root == null)
 							return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 					}
-					else if (!parsingContext.TryPeek(out ParsingContext ctx))
+					else if (!TryPeek(parsingContext, out ParsingContext ctx))
 					{
 						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 					}
@@ -1102,7 +1119,7 @@ namespace AleProjects.Json
 					{
 						root = null;
 					}
-					else if (!parsingContext.TryPeek(out ParsingContext ctx))
+					else if (!TryPeek(parsingContext, out ParsingContext ctx))
 					{
 						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 					}
@@ -1153,7 +1170,7 @@ namespace AleProjects.Json
 					{
 						root = val;
 					}
-					else if (!parsingContext.TryPeek(out ParsingContext ctx))
+					else if (!TryPeek(parsingContext, out ParsingContext ctx))
 					{
 						return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 					}
