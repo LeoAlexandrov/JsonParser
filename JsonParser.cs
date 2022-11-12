@@ -156,6 +156,14 @@ namespace AleProjects.Json
 						message = MESSAGE_UNEXPECTED_TOKEN;
 						break;
 
+					case INCOMPATIBLE_TYPE:
+						message = MESSAGE_INCOMPATIBLE_TYPE;
+						break;
+
+					case UNKNOWN_PROPERTY:
+						message = MESSAGE_UNKNOWN_PROPERTY;
+						break;
+
 					default:
 						message = MESSAGE_UNKNOWN_ERROR;
 						break;
