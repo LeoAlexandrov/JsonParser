@@ -13,6 +13,7 @@ using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.Serialization;
 using System.Text;
 
 
@@ -73,6 +74,8 @@ namespace AleProjects.Json
 			public bool ForceDoubleInArrays { get; set; }
 
 			public Func<IEnumerable<string>, object> ObjectFactory { get; set; }
+			public Func<string, object, object, int> PropertySetter { get; set; }
+
 		}
 
 
@@ -83,12 +86,16 @@ namespace AleProjects.Json
 			public const int KEY_NOT_UNIQUE = 3;
 			public const int INVALID_KEY = 4;
 			public const int UNEXPECTED_TOKEN = 5;
+			public const int INCOMPATIBLE_TYPE = 6;
+			public const int UNKNOWN_PROPERTY = 7;
 
 			public const string MESSAGE_ARGUMENT_NULL = "Argument is null";
 			public const string MESSAGE_UNEXPECTED_END = "Unexpected end";
 			public const string MESSAGE_KEY_NOT_UNIQUE = "Key not unique";
 			public const string MESSAGE_INVALID_KEY = "Invalid key";
 			public const string MESSAGE_UNEXPECTED_TOKEN = "Unexpected token";
+			public const string MESSAGE_INCOMPATIBLE_TYPE = "Incompatible type";
+			public const string MESSAGE_UNKNOWN_PROPERTY = "Unknown property";
 			public const string MESSAGE_UNKNOWN_ERROR = "Unknown error";
 
 			public int Code { get; private set; }
@@ -276,6 +283,9 @@ namespace AleProjects.Json
 					if (TypedArray != null && TypedArray is IList list) 
 						return list.Count.ToString();
 
+					if (LastProcessed == LastProcessedElement.ArrayStart)
+						return "0";
+
 					return PendingObjectKey;
 				}
 			}
@@ -283,8 +293,10 @@ namespace AleProjects.Json
 			public ParsingContext(object jsonObject)
 			{
 				if (jsonObject != null)
-					if (jsonObject is IDictionary<string, object> dict) JsonObject = dict;
-					else TypedObject = jsonObject;
+					if (jsonObject is IDictionary<string, object> dict) 
+						JsonObject = dict;
+					else 
+						TypedObject = jsonObject;
 			}
 
 
@@ -300,55 +312,81 @@ namespace AleProjects.Json
 				return JsonArray ?? TypedArray;
 			}
 
-			public void SetObjectProperty(string name, object value)
+			public int SetObjectProperty(string name, object value, Func<string, object, object, int> PropertySetter)
 			{
+				int result;
+
 				if (JsonObject != null)
 				{
 					JsonObject.Add(name, value);
+					result = 0;
 				}
 				else if (TypedObject != null)
 				{
-					var property = TypedObject
-						.GetType()
-						.GetProperties()
-						.FirstOrDefault(p => p.CanWrite && string.Compare(p.Name, name, StringComparison.InvariantCultureIgnoreCase) == 0);
+					if (PropertySetter != null)
+						result = PropertySetter(name, value, TypedObject);
+					else
+						result = 1;
 
-					if (property != null)
-						try
-						{
-							property.SetValue(TypedObject, value);
-						}
-						catch
-						{
+					if (result > 0)
+					{
+
+						var property = TypedObject
+							.GetType()
+							.GetProperties()
+							.FirstOrDefault(p => p.CanWrite && string.Compare(p.Name, name, StringComparison.InvariantCultureIgnoreCase) == 0);
+
+						if (property != null)
 							try
 							{
-								property.SetValue(TypedObject, Convert.ChangeType(value, property.PropertyType));
+								property.SetValue(TypedObject, value);
 							}
 							catch
 							{
+								try
+								{
+									property.SetValue(TypedObject, Convert.ChangeType(value, property.PropertyType));
+								}
+								catch
+								{
+								}
 							}
-						}
+					}
 				}
+				else
+				{
+					result = 1;
+				}
+
+				return result;
 			}
 
 			public void AddObjectToArray(object item)
 			{
-				if (TypedArray != null) ConvertToJsonArrayAndAdd(item);
-				else if (JsonArray == null) JsonArray = new List<object>() { item };
-				else JsonArray.Add(item);
+				if (TypedArray != null)
+					ConvertToJsonArrayAndAdd(item);
+				else if (JsonArray == null) 
+					JsonArray = new List<object>() { item };
+				else 
+					JsonArray.Add(item);
 			}
 
 			public void AddStringToArray(string item)
 			{
-				if (JsonArray != null) JsonArray.Add(item);
-				else if (TypedArray == null) TypedArray = new List<string>() { item };
-				else if (TypedArray is List<string> stringList) stringList.Add(item);
-				else ConvertToJsonArrayAndAdd(item);
+				if (JsonArray != null) 
+					JsonArray.Add(item);
+				else if (TypedArray == null) 
+					TypedArray = new List<string>() { item };
+				else if (TypedArray is List<string> stringList) 
+					stringList.Add(item);
+				else 
+					ConvertToJsonArrayAndAdd(item);
 			}
 
 			public void AddNumberToArray(object item)
 			{
-				if (JsonArray != null) JsonArray.Add(item);
+				if (JsonArray != null) 
+					JsonArray.Add(item);
 				else if (TypedArray == null)
 				{
 					switch (item)
@@ -370,7 +408,8 @@ namespace AleProjects.Json
 							break;
 					}
 				}
-				else if (TypedArray is List<double> doubleList) doubleList.Add(Convert.ToDouble(item));
+				else if (TypedArray is List<double> doubleList) 
+					doubleList.Add(Convert.ToDouble(item));
 				else if (item.GetType() == typeof(double))
 				{
 					IList list = TypedArray as IList;
@@ -379,7 +418,8 @@ namespace AleProjects.Json
 					doubleList.Add((double)item);
 					TypedArray = doubleList;
 				}
-				else if (TypedArray is List<long> longList) longList.Add(Convert.ToInt64(item));
+				else if (TypedArray is List<long> longList) 
+					longList.Add(Convert.ToInt64(item));
 				else if (item.GetType() == typeof(long))
 				{
 					IList list = TypedArray as IList;
@@ -388,25 +428,35 @@ namespace AleProjects.Json
 					longList.Add((long)item);
 					TypedArray = longList;
 				}
-				else if (TypedArray is List<int> intList && item.GetType() == typeof(int)) intList.Add((int)item);
-				else ConvertToJsonArrayAndAdd(item);
+				else if (TypedArray is List<int> intList && item.GetType() == typeof(int)) 
+					intList.Add((int)item);
+				else
+					ConvertToJsonArrayAndAdd(item);
 
 			}
 
 			public void AddDateTimeToArray(DateTime item)
 			{
-				if (JsonArray != null) JsonArray.Add(item);
-				else if (TypedArray == null) TypedArray = new List<DateTime>() { item };
-				else if (TypedArray is List<DateTime> datetimeList) datetimeList.Add(item);
-				else ConvertToJsonArrayAndAdd(item);
+				if (JsonArray != null) 
+					JsonArray.Add(item);
+				else if (TypedArray == null) 
+					TypedArray = new List<DateTime>() { item };
+				else if (TypedArray is List<DateTime> datetimeList) 
+					datetimeList.Add(item);
+				else 
+					ConvertToJsonArrayAndAdd(item);
 			}
 
 			public void AddBoolToArray(bool item)
 			{
-				if (JsonArray != null) JsonArray.Add(item);
-				else if (TypedArray == null) TypedArray = new List<bool>() { item };
-				else if (TypedArray is List<bool> boolList) boolList.Add(item);
-				else ConvertToJsonArrayAndAdd(item);
+				if (JsonArray != null) 
+					JsonArray.Add(item);
+				else if (TypedArray == null) 
+					TypedArray = new List<bool>() { item };
+				else if (TypedArray is List<bool> boolList) 
+					boolList.Add(item);
+				else 
+					ConvertToJsonArrayAndAdd(item);
 			}
 
 			private void ConvertToJsonArrayAndAdd(object item)
@@ -496,7 +546,7 @@ namespace AleProjects.Json
 		{
 			double doubleVal;
 
-#if NETCOREAPP2_1 || NETCOREAPP2_2 || NETCOREAPP3_0 || NETCOREAPP3_1 || NET5_0 || NETSTANDARD2_1
+#if NETCOREAPP2_1 || NETCOREAPP2_2 || NETCOREAPP3_0 || NETCOREAPP3_1 || NET5_0 || NET6_0 || NETSTANDARD2_1 
 
 			ReadOnlySpan<char> number = text.AsSpan(start, count);
 
@@ -606,7 +656,7 @@ namespace AleProjects.Json
 
 								i++;
 
-#if NETCOREAPP2_1 || NETCOREAPP2_2 || NETCOREAPP3_0 || NETCOREAPP3_1 || NET5_0 || NETSTANDARD2_1
+#if NETCOREAPP2_1 || NETCOREAPP2_2 || NETCOREAPP3_0 || NETCOREAPP3_1 || NET5_0 || NET6_0 || NETSTANDARD2_1
 								resultBuffer.Append((char)ushort.Parse(text.AsSpan(i - 4, 4), NumberStyles.HexNumber));
 #else
 								resultBuffer.Append((char)ushort.Parse(text.Substring(i - 4, 4), NumberStyles.HexNumber));
@@ -752,7 +802,7 @@ namespace AleProjects.Json
 				text.EndsWith(")/"))
 			{
 
-#if NETCOREAPP2_1 || NETCOREAPP2_2 || NETCOREAPP3_0 || NETCOREAPP3_1 || NET5_0 || NETSTANDARD2_1
+#if NETCOREAPP2_1 || NETCOREAPP2_2 || NETCOREAPP3_0 || NETCOREAPP3_1 || NET5_0 || NET6_0 || NETSTANDARD2_1
 
 				if (long.TryParse(text.AsSpan("/Date(".Length, text.Length - "/Date()/".Length), out long msec))
 				{
@@ -801,7 +851,7 @@ namespace AleProjects.Json
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		protected static bool TryPeek(Stack<ParsingContext> parsingContext, out ParsingContext context)
 		{
-#if NETCOREAPP2_1 || NETCOREAPP2_2 || NETCOREAPP3_0 || NETCOREAPP3_1 || NET5_0 || NETSTANDARD2_1
+#if NETCOREAPP2_1 || NETCOREAPP2_2 || NETCOREAPP3_0 || NETCOREAPP3_1 || NET5_0 || NET6_0 || NETSTANDARD2_1
 			return parsingContext.TryPeek(out context);
 #else
 			if (parsingContext.Any())
@@ -855,6 +905,7 @@ namespace AleProjects.Json
 			bool recognizeDateTime = false;
 			bool forceDoubleInArrays = false;
 			Func<IEnumerable<string>, object> objectFactory = null;
+			Func<string, object, object, int> propertySetter = null;
 
 			if (settings != null)
 			{
@@ -863,6 +914,7 @@ namespace AleProjects.Json
 				recognizeDateTime = settings.RecognizeDateTime;
 				forceDoubleInArrays = settings.ForceDoubleInArrays;
 				objectFactory = settings.ObjectFactory;
+				propertySetter = settings.PropertySetter;
 			}
 
 			parsingContext.Clear();
@@ -936,9 +988,12 @@ namespace AleProjects.Json
 						else
 						{
 							if (recognizeDateTime && TryGetDateTime(val, out DateTime dt))
-								ctx.SetObjectProperty(ctx.PendingObjectKey, dt);
-							else
-								ctx.SetObjectProperty(ctx.PendingObjectKey, val);
+							{
+								if (ctx.SetObjectProperty(ctx.PendingObjectKey, dt, propertySetter) < 0)
+									return WithError(ParseError.INCOMPATIBLE_TYPE, text, i, out error);
+							}
+							else if (ctx.SetObjectProperty(ctx.PendingObjectKey, val, propertySetter) < 0)
+								return WithError(ParseError.INCOMPATIBLE_TYPE, text, i, out error);
 
 							ctx.LastProcessed = LastProcessedElement.TextConstant;
 						}
@@ -994,8 +1049,8 @@ namespace AleProjects.Json
 					{
 						if (ctx.IsArray)
 							ctx.AddObjectToArray(obj);
-						else
-							ctx.SetObjectProperty(ctx.PendingObjectKey, obj);
+						else if (ctx.SetObjectProperty(ctx.PendingObjectKey, obj, propertySetter) < 0)
+							return WithError(ParseError.INCOMPATIBLE_TYPE, text, i, out error);
 
 						ctx.LastProcessed = LastProcessedElement.ObjectEnd;
 					}
@@ -1050,8 +1105,8 @@ namespace AleProjects.Json
 					{
 						if (ctx.IsArray)
 							ctx.AddObjectToArray(array);
-						else
-							ctx.SetObjectProperty(ctx.PendingObjectKey, array);
+						else if (ctx.SetObjectProperty(ctx.PendingObjectKey, array, propertySetter) < 0)
+							return WithError(ParseError.INCOMPATIBLE_TYPE, text, i, out error);
 
 						ctx.LastProcessed = LastProcessedElement.ArrayEnd;
 					}
@@ -1104,7 +1159,9 @@ namespace AleProjects.Json
 							(number = ObjectForNumber(text, i, j - i, numberType)) == null)
 							return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
-						ctx.SetObjectProperty(ctx.PendingObjectKey, number);
+						if (ctx.SetObjectProperty(ctx.PendingObjectKey, number, propertySetter) < 0)
+							return WithError(ParseError.INCOMPATIBLE_TYPE, text, i, out error);
+						
 						ctx.LastProcessed = LastProcessedElement.Number;
 					}
 
@@ -1141,7 +1198,9 @@ namespace AleProjects.Json
 						if (ctx.LastProcessed != LastProcessedElement.KeyValueSep)
 							return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
-						ctx.SetObjectProperty(ctx.PendingObjectKey, null);
+						if (ctx.SetObjectProperty(ctx.PendingObjectKey, null, propertySetter) < 0)
+							return WithError(ParseError.INCOMPATIBLE_TYPE, text, i, out error);
+
 						ctx.LastProcessed = LastProcessedElement.Null;
 					}
 
@@ -1192,7 +1251,9 @@ namespace AleProjects.Json
 						if (ctx.LastProcessed != LastProcessedElement.KeyValueSep)
 							return WithError(ParseError.UNEXPECTED_TOKEN, text, i, out error);
 
-						ctx.SetObjectProperty(ctx.PendingObjectKey, val);
+						if (ctx.SetObjectProperty(ctx.PendingObjectKey, val, propertySetter) < 0)
+							return WithError(ParseError.INCOMPATIBLE_TYPE, text, i, out error);
+
 						ctx.LastProcessed = LastProcessedElement.BoolConstant;
 					}
 				}
